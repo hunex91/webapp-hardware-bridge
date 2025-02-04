@@ -39,6 +39,7 @@ dependencies {
 }
 
 shadowJar {
+    mergeServiceFiles()
     archiveBaseName.set('webapp-hardware-bridge')
     archiveClassifier.set('')
     archiveVersion.set('')

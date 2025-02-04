@@ -9,7 +9,7 @@ RUN gradle clean build shadowJar
 FROM eclipse-temurin:21-jre-alpine
 
 # Install necessary packages for printing
-RUN apk add --no-cache cups
+RUN apk add --no-cache cups libc6-compat openssl
 
 WORKDIR /usr/app
 COPY --from=builder /usr/app/build/libs/*.jar ./webapp-hardware-bridge.jar

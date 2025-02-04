@@ -1,0 +1,13 @@
+Dockerfile
+.dockerignore
+.git/
+downloads/
+.gradle/
+gradle/
+log/
+out/
+jre/
+build/
+.idea/workspace.xml
+config.json
+*.exe

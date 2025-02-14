@@ -19,6 +19,8 @@ import tigerworkshop.webapphardwarebridge.services.ConfigService;
 import tigerworkshop.webapphardwarebridge.services.DocumentService;
 import tigerworkshop.webapphardwarebridge.utils.AnnotatedPrintable;
 import tigerworkshop.webapphardwarebridge.utils.ImagePrintable;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+
 
 import javax.imageio.ImageIO;
 import javax.print.*;
@@ -211,52 +213,43 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
         File file = documentService.prepareDocument(printDocument);
         String path = file.getPath();
         String filename = file.getName();
+        String printerName = printerSearchResult.getName(); 
 
         long timeStart = System.currentTimeMillis();
 
-        DocPrintJob docPrintJob = printerSearchResult.getDocPrintJob();
-
-        PrinterJob job = PrinterJob.getPrinterJob();
-        job.setPrintService(docPrintJob.getPrintService());
-
-        PageFormat pageFormat = getPageFormat(job, printerSearchResult);
-
         try (PDDocument document = PDDocument.load(new File(path))) {
-            Book book = new Book();
-            for (int i = 0; i < document.getNumberOfPages(); i += 1) {
-                // Rotate Page Automatically
-                PageFormat eachPageFormat = (PageFormat) pageFormat.clone();
+            PDRectangle pageSize = document.getPage(0).getCropBox(); 
+            float width = pageSize.getWidth() * 0.3528f;
+            float height = pageSize.getHeight() * 0.3528f;
 
-                if (printerSearchResult.getMapping().isAutoRotate()) {
-                    if (document.getPage(i).getCropBox().getWidth() > document.getPage(i).getCropBox().getHeight()) {
-                        log.debug("Auto rotation result: LANDSCAPE");
-                        eachPageFormat.setOrientation(PageFormat.LANDSCAPE);
-                    } else {
-                        log.debug("Auto rotation result: PORTRAIT");
-                        eachPageFormat.setOrientation(PageFormat.PORTRAIT);
-                    }
-                }
+            log.info("Detected PDF Size: {} x {} mm", height, width);
 
-                PDFPrintable pdfPrintable = new PDFPrintable(document, Scaling.SHRINK_TO_FIT, false, printerSearchResult.getMapping().getForceDPI());
+            String paperSize = (width > 210 || height > 297) ? "iso_a4_210x297mm" : String.format("Custom.%.0fx%.0fmm", height, width);
 
-                // Annotate Printable
-                AnnotatedPrintable annotatedPrintable = new AnnotatedPrintable(pdfPrintable);
-                for (AnnotatedPrintable.AnnotatedPrintableAnnotation printDocumentExtra : printDocument.getExtras()) {
-                    annotatedPrintable.addAnnotation(printDocumentExtra);
-                }
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "lpr", 
+                "-P", printerName, 
+                "-o", "media=" + paperSize,
+                "-o", "fit-to-page",
+                path
+            );
 
-                book.append(annotatedPrintable, eachPageFormat);
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+            int exitCode = process.waitFor();
+
+            if (exitCode == 0) {
+                log.info("printPDF {} sent to printer {} successfully with paper size {}", path, printerName, paperSize);
+            } else {
+                log.error("printPDF failed to print {} on printer {}", path, printerName);
             }
 
-            job.setPageable(book);
-            job.setJobName(filename);
-            job.setCopies(printDocument.getQty());
-            job.print();
-
-            long timeFinish = System.currentTimeMillis();
-
-            log.info("printPDF {} finished in {} ms", path, timeFinish - timeStart);
+        } catch (Exception e) {
+            log.error("printPDF Error: {}", e.getMessage(), e);
         }
+
+        long timeFinish = System.currentTimeMillis();
+        log.info("printPDF {} finished in {} ms", path, timeFinish - timeStart);
     }
 
     private PageFormat getPageFormat(PrinterJob job, PrinterSearchResult printerSearchResult) {

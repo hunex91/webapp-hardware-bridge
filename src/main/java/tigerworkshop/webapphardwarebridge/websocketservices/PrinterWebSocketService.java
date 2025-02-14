@@ -20,7 +20,8 @@ import tigerworkshop.webapphardwarebridge.services.DocumentService;
 import tigerworkshop.webapphardwarebridge.utils.AnnotatedPrintable;
 import tigerworkshop.webapphardwarebridge.utils.ImagePrintable;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
-
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.imageio.ImageIO;
 import javax.print.*;
@@ -36,7 +37,11 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
     private static final ConfigService configService = ConfigService.getInstance();
     private static final DocumentService documentService = DocumentService.getInstance();
     private static final ObjectMapper objectMapper = new ObjectMapper();
-    
+    private static final float A4_WIDTH_MM = 210.0f;
+    private static final float A4_HEIGHT_MM = 297.0f;
+    private static final float CONVERSION_FACTOR = 0.3528f;
+    private static final String CONFIG_PATH = "config.json";
+
     public PrinterWebSocketService() {
         log.info("Starting PrinterWebSocketService");
     }
@@ -208,42 +213,94 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
      * Prints PDF to specified printer.
      */
     private void printPDF(PrintDocument printDocument, PrinterSearchResult printerSearchResult) throws Exception {
-        log.debug("printPDF::{}", printDocument);
 
         File file = documentService.prepareDocument(printDocument);
         String path = file.getPath();
         String filename = file.getName();
-        String printerName = printerSearchResult.getName(); 
+        String printerName = printerSearchResult.getName();
 
         long timeStart = System.currentTimeMillis();
 
-        try (PDDocument document = PDDocument.load(new File(path))) {
-            PDRectangle pageSize = document.getPage(0).getCropBox(); 
-            float width = pageSize.getWidth() * 0.3528f;
-            float height = pageSize.getHeight() * 0.3528f;
+        ObjectMapper objectMapper = new ObjectMapper();
+        File configFile = new File(CONFIG_PATH);
+        JsonNode configNode = objectMapper.readTree(configFile);
 
-            log.info("Detected PDF Size: {} x {} mm", height, width);
+        JsonNode mappingsNode = configNode.path("printer").path("mappings");
+        String customLprCommand = null;
 
-            String paperSize = (width > 210 || height > 297) ? "iso_a4_210x297mm" : String.format("Custom.%.0fx%.0fmm", height, width);
-
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                "lpr", 
-                "-P", printerName, 
-                "-o", "media=" + paperSize,
-                "-o", "fit-to-page",
-                path
-            );
-
-            processBuilder.redirectErrorStream(true);
-            Process process = processBuilder.start();
-            int exitCode = process.waitFor();
-
-            if (exitCode == 0) {
-                log.info("printPDF {} sent to printer {} successfully with paper size {}", path, printerName, paperSize);
-            } else {
-                log.error("printPDF failed to print {} on printer {}", path, printerName);
+        for (JsonNode mapping : mappingsNode) {
+            if (mapping.path("name").asText("").equals(printerName)) {
+                customLprCommand = mapping.path("customLprCommand").asText(null);
+                break;
             }
+        }
 
+        try (PDDocument document = PDDocument.load(new File(path))) {
+            PDRectangle firstPageSize = document.getPage(0).getCropBox();
+            float width = firstPageSize.getWidth() * CONVERSION_FACTOR;
+            float height = firstPageSize.getHeight() * CONVERSION_FACTOR;
+
+            String paperSize = (width > A4_WIDTH_MM || height > A4_HEIGHT_MM) 
+                    ? "iso_a4_210x297mm" 
+                    : String.format("Custom.%.0fx%.0fmm", height, width);
+
+            if (customLprCommand != null && !customLprCommand.isEmpty()) {
+                String processedCommand = customLprCommand
+                        .replace("{printer}", printerName)
+                        .replace("{file}", path)
+                        .replace("{paperSize}", paperSize);
+
+                ProcessBuilder processBuilder = new ProcessBuilder("/bin/sh", "-c", processedCommand);
+                processBuilder.redirectErrorStream(true);
+                Process process = processBuilder.start();
+                int exitCode = process.waitFor();
+
+                if (exitCode == 0) {
+                    log.info("LPR Print job successfully sent to printer: {}", printerName);
+                } else {
+                    log.error("LPR Print job failed for printer: {}", printerName);
+                }
+            } else {
+
+                DocPrintJob docPrintJob = printerSearchResult.getDocPrintJob();
+                if (docPrintJob == null) {
+                    return;
+                }
+
+                PrinterJob job = PrinterJob.getPrinterJob();
+                job.setPrintService(docPrintJob.getPrintService());
+                PageFormat pageFormat = getPageFormat(job, printerSearchResult);
+                Book book = new Book();
+
+                for (int i = 0; i < document.getNumberOfPages(); i++) {
+                    PageFormat eachPageFormat = (PageFormat) pageFormat.clone();
+
+                    if (printerSearchResult.getMapping().isAutoRotate()) {
+                        if (document.getPage(i).getCropBox().getWidth() > document.getPage(i).getCropBox().getHeight()) {
+                            log.debug("Auto rotation: LANDSCAPE");
+                            eachPageFormat.setOrientation(PageFormat.LANDSCAPE);
+                        } else {
+                            log.debug("Auto rotation: PORTRAIT");
+                            eachPageFormat.setOrientation(PageFormat.PORTRAIT);
+                        }
+                    }
+
+                    PDFPrintable pdfPrintable = new PDFPrintable(document, Scaling.SHRINK_TO_FIT, false, printerSearchResult.getMapping().getForceDPI());
+
+                    AnnotatedPrintable annotatedPrintable = new AnnotatedPrintable(pdfPrintable);
+                    for (AnnotatedPrintable.AnnotatedPrintableAnnotation printDocumentExtra : printDocument.getExtras()) {
+                        annotatedPrintable.addAnnotation(printDocumentExtra);
+                    }
+
+                    book.append(annotatedPrintable, eachPageFormat);
+                }
+
+                job.setPageable(book);
+                job.setJobName(filename);
+                job.setCopies(printDocument.getQty());
+                job.print();
+                log.info("Print job successfully sent to printer: {}", printerName);
+            }
         } catch (Exception e) {
             log.error("printPDF Error: {}", e.getMessage(), e);
         }

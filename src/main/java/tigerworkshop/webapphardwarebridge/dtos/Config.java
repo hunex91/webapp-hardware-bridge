@@ -97,10 +97,11 @@ public class Config {
     public static class PrinterMapping {
         private String type;
         private String name;
-
+        private String customLprCommand;
         private boolean autoRotate = false;
         private boolean resetImageableArea = true;
         private int forceDPI = 0;
+        private String paperSize;
     }
 
     @Data

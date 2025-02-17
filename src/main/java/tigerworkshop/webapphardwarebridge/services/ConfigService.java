@@ -52,7 +52,8 @@ public class ConfigService {
     }
 
     public void addPrintTypeToList(String printType) {
-        config.getPrinter().getMappings().add(new Config.PrinterMapping(printType, PRINTER_PLACEHOLDER, false, true, 0));
+        config.getPrinter().getMappings().add(new Config.PrinterMapping(printType, PRINTER_PLACEHOLDER, null, false, true, 0, null));
+
         save();
     }
 }

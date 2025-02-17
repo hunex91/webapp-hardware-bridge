@@ -19,6 +19,10 @@ import tigerworkshop.webapphardwarebridge.services.ConfigService;
 import tigerworkshop.webapphardwarebridge.services.DocumentService;
 import tigerworkshop.webapphardwarebridge.utils.AnnotatedPrintable;
 import tigerworkshop.webapphardwarebridge.utils.ImagePrintable;
+import tigerworkshop.webapphardwarebridge.dtos.Config.PrinterMapping;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.imageio.ImageIO;
 import javax.print.*;
@@ -34,7 +38,11 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
     private static final ConfigService configService = ConfigService.getInstance();
     private static final DocumentService documentService = DocumentService.getInstance();
     private static final ObjectMapper objectMapper = new ObjectMapper();
-    
+    private static final float A4_WIDTH_MM = 210.0f;
+    private static final float A4_HEIGHT_MM = 297.0f;
+    private static final float CONVERSION_FACTOR = 0.3528f;
+    private static final double MM_TO_POINTS = 2.8346;
+
     public PrinterWebSocketService() {
         log.info("Starting PrinterWebSocketService");
     }
@@ -206,80 +214,84 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
      * Prints PDF to specified printer.
      */
     private void printPDF(PrintDocument printDocument, PrinterSearchResult printerSearchResult) throws Exception {
-        log.debug("printPDF::{}", printDocument);
+        log.info("printPDF started for printer: {}", printerSearchResult.getName());
 
         File file = documentService.prepareDocument(printDocument);
         String path = file.getPath();
         String filename = file.getName();
+        String printerName = printerSearchResult.getName();
 
-        long timeStart = System.currentTimeMillis();
+        PrinterMapping mapping = printerSearchResult.getMapping();
+        if (mapping == null) {
+            return;
+        }
+        
+        String customLprCommand = mapping.getCustomLprCommand();
+        if (customLprCommand != null && !customLprCommand.isEmpty()) {
+            String processedCommand = customLprCommand
+                .replace("{printer}", printerName)
+                .replace("{file}", path)
+                .replace("{paperSize}", mapping.getPaperSize());
+                
+            ProcessBuilder processBuilder = new ProcessBuilder("/bin/sh", "-c", processedCommand);
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+            int exitCode = process.waitFor();
+
+            if (exitCode == 0) {
+                log.info("LPR Print job successfully sent to printer: {}", printerName);
+            } else {
+                log.error("LPR Print job failed for printer: {}", printerName);
+            }
+            return;
+        }
 
         DocPrintJob docPrintJob = printerSearchResult.getDocPrintJob();
+        if (docPrintJob == null) {
+            return;
+        }
 
         PrinterJob job = PrinterJob.getPrinterJob();
         job.setPrintService(docPrintJob.getPrintService());
-
+        
         PageFormat pageFormat = getPageFormat(job, printerSearchResult);
+        Paper paper = pageFormat.getPaper();
 
-        try (PDDocument document = PDDocument.load(new File(path))) {
+        try (PDDocument document = PDDocument.load(file)) {
             Book book = new Book();
-            for (int i = 0; i < document.getNumberOfPages(); i += 1) {
-                // Rotate Page Automatically
-                PageFormat eachPageFormat = (PageFormat) pageFormat.clone();
 
-                if (printerSearchResult.getMapping().isAutoRotate()) {
-                    if (document.getPage(i).getCropBox().getWidth() > document.getPage(i).getCropBox().getHeight()) {
-                        log.debug("Auto rotation result: LANDSCAPE");
+            for (int i = 0; i < document.getNumberOfPages(); i++) {
+                PageFormat eachPageFormat = (PageFormat) pageFormat.clone();
+                
+                if (mapping.isAutoRotate()) {
+                    PDRectangle cropBox = document.getPage(i).getCropBox();
+                    if (cropBox.getWidth() > cropBox.getHeight()) {
+                        log.debug("Auto rotation: LANDSCAPE");
                         eachPageFormat.setOrientation(PageFormat.LANDSCAPE);
                     } else {
-                        log.debug("Auto rotation result: PORTRAIT");
+                        log.debug("Auto rotation: PORTRAIT");
                         eachPageFormat.setOrientation(PageFormat.PORTRAIT);
                     }
                 }
-
-                PDFPrintable pdfPrintable = new PDFPrintable(document, Scaling.SHRINK_TO_FIT, false, printerSearchResult.getMapping().getForceDPI());
-
-                // Annotate Printable
+                
+                PDFPrintable pdfPrintable = new PDFPrintable(document, Scaling.ACTUAL_SIZE, false, mapping.getForceDPI());
                 AnnotatedPrintable annotatedPrintable = new AnnotatedPrintable(pdfPrintable);
-                for (AnnotatedPrintable.AnnotatedPrintableAnnotation printDocumentExtra : printDocument.getExtras()) {
-                    annotatedPrintable.addAnnotation(printDocumentExtra);
+                for (AnnotatedPrintable.AnnotatedPrintableAnnotation annotation : printDocument.getExtras()) {
+                    annotatedPrintable.addAnnotation(annotation);
                 }
-
                 book.append(annotatedPrintable, eachPageFormat);
             }
-
             job.setPageable(book);
             job.setJobName(filename);
             job.setCopies(printDocument.getQty());
             job.print();
+            log.info("Print job successfully sent to printer: {}", printerName);
 
-            long timeFinish = System.currentTimeMillis();
-
-            log.info("printPDF {} finished in {} ms", path, timeFinish - timeStart);
+        } catch (Exception e) {
+            log.error("printPDF Error: {}", e.getMessage(), e);
         }
     }
 
-    private PageFormat getPageFormat(PrinterJob job, PrinterSearchResult printerSearchResult) {
-        final PageFormat pageFormat = job.defaultPage();
-
-        log.debug("PageFormat Size: {} x {}", pageFormat.getWidth(), pageFormat.getHeight());
-        log.debug("PageFormat Imageable Size:{} x {}, XY: {}, {}", pageFormat.getImageableWidth(), pageFormat.getImageableHeight(), pageFormat.getImageableX(), pageFormat.getImageableY());
-        log.debug("Paper Size: {} x {}", pageFormat.getPaper().getWidth(), pageFormat.getPaper().getHeight());
-        log.debug("Paper Imageable Size: {} x {}, XY: {}, {}", pageFormat.getPaper().getImageableWidth(), pageFormat.getPaper().getImageableHeight(), pageFormat.getPaper().getImageableX(), pageFormat.getPaper().getImageableY());
-
-        // Reset Imageable Area
-        if (printerSearchResult.getMapping().isResetImageableArea()) {
-            log.debug("PageFormat reset enabled");
-            Paper paper = pageFormat.getPaper();
-            paper.setImageableArea(0, 0, paper.getWidth(), paper.getHeight());
-            pageFormat.setPaper(paper);
-        }
-
-        log.debug("Final Paper Size: {} x {}", pageFormat.getPaper().getWidth(), pageFormat.getPaper().getHeight());
-        log.debug("Final Paper Imageable Size: {} x {}, XY: {}, {}", pageFormat.getPaper().getImageableWidth(), pageFormat.getPaper().getImageableHeight(), pageFormat.getPaper().getImageableX(), pageFormat.getPaper().getImageableY());
-
-        return pageFormat;
-    }
 
     /**
      * Get PrinterSearchResult for specified type
@@ -321,6 +333,36 @@ public class PrinterWebSocketService implements WebSocketServiceInterface {
 
          throw new PrinterException("No matched printer: " + type);
     }
+
+    private PageFormat getPageFormat(PrinterJob job, PrinterSearchResult printerSearchResult) {
+        PageFormat pageFormat = job.defaultPage();
+        Paper paper = new Paper();
+        PrinterMapping mapping = printerSearchResult.getMapping();
+        String paperSize = mapping.getPaperSize();
+
+        if (paperSize != null && !paperSize.isEmpty()) {
+            if (paperSize.startsWith("Custom.")) {
+                try {
+                    String[] dimensions = paperSize.replace("Custom.", "").replace("mm", "").split("x");
+                    double width = Double.parseDouble(dimensions[0]) * MM_TO_POINTS;
+                    double height = Double.parseDouble(dimensions[1]) * MM_TO_POINTS;
+                    paper.setSize(width, height);
+                    paper.setImageableArea(0, 0, width, height);
+                } catch (Exception e) {
+                    log.error("Invalid paper size format in mapping: {}", paperSize, e);
+                }
+            } else if (paperSize.equalsIgnoreCase("A4") || paperSize.equalsIgnoreCase("iso_a4_210x297mm")) {
+                paper.setSize(A4_WIDTH_MM * MM_TO_POINTS, A4_HEIGHT_MM * MM_TO_POINTS);
+                paper.setImageableArea(0, 0, A4_WIDTH_MM * MM_TO_POINTS, A4_HEIGHT_MM * MM_TO_POINTS);
+            }
+        } else {
+            paper.setSize(A4_WIDTH_MM * MM_TO_POINTS, A4_HEIGHT_MM * MM_TO_POINTS);
+            paper.setImageableArea(0, 0, A4_WIDTH_MM * MM_TO_POINTS, A4_HEIGHT_MM * MM_TO_POINTS);
+        }
+        pageFormat.setPaper(paper);
+        return pageFormat;
+    }
+
 
     @Getter
     @AllArgsConstructor

@@ -47,7 +47,7 @@ Common use cases:
 
 ## How it works?
 
-WebApp Hardware Bridge is a Java based application, which have more access to underlying hardwares.
+WebApp Hardware Bridge is a Java based application, which has more access to underlying hardware.
 
 It exposes a WebSocket server on localhost to accept print jobs and serial connections from browsers.
 
@@ -68,6 +68,39 @@ Web UI / API are provided to set up mappings between keys and printers/serials.
 
 Therefore, WebApps do not need to care about the actual printer names.
 
+## Example Printer Configuration
+
+Here is an example of the `printer` section in `config.json`:
+
+```json
+  "printer": {
+    "enabled": true,
+    "autoAddUnknownType": false,
+    "fallbackToDefault": false,
+    "mappings": [
+      {
+        "type": "printer",
+        "name": "Zebra_printer",
+        "autoRotate": false,
+        "resetImageableArea": true,
+        "forceDPI": 0,
+        "customLprCommand": "lpr -P {printer} -o media={paperSize} -o fit-to-page {file}",
+        "paperSize": "Custom.100x150mm"
+      },
+      {
+        "type": "printer2",
+        "name": "Xerox_printer",
+        "autoRotate": false,
+        "resetImageableArea": true,
+        "forceDPI": 0,
+        "paperSize": "iso_a4_210x297mm"
+      }
+    ]
+  }
+```
+
+This configuration allows WebApps to connect to printers via **WebSockets** and defines **printer settings** such as mappings, DPI settings, and printing commands.
+
 ## More documents
 
 - [Configurations](CONFIGURATION.md)
@@ -79,7 +112,7 @@ Therefore, WebApps do not need to care about the actual printer names.
 
 ## Upgrade
 
-- Settings will lost after upgrade from 0.x to 1.0, please reconfigure via "Web UI" or "Web API"
+- Settings will be lost after upgrading from 0.x to 1.0, please reconfigure via "Web UI" or "Web API"
 
 ## Changelogs
 
